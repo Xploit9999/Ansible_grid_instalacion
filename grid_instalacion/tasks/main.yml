@@ -1,0 +1,126 @@
+---
+# tasks file for grid_instalacion
+- name: Instalacion Grid | Carga varables del role del aprovisionamiento
+  include_vars: "{{ aprovisionamiento_vars }}"
+
+- name: Instalacion Grid | Importar tarea general para creacion de grupos de relacion de confianza.
+  include_tasks:
+    file: ../tareas_generales/creacion_grupos.yml
+  vars:
+    usar_grupo_db: true
+
+- name: Instalacion Grid: Parametriza valores de kernel
+  set_fact:
+    sysctl_db:
+      fs.file-max: 6815744
+      net.core.rmem_default: 262144
+      net.core.rmem_max: 4194304
+      net.core.wmem_default: 262144
+      net.core.wmem_max: 1048576
+      fs.aio-max-nr: 1048576
+
+- name: Instalacion Grid | Setea parametrizaciones de kernel y recarga su configuracion.
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    reload: true
+    state: present
+  loop: "{{ sysctl_db | dict2items }}"
+
+- name: Instalacion Grid | Valida si esa el paquete compact-lib instalado.
+  yum:
+    name: compat-libcap1
+    state: absent
+  register: check
+  check_mode: true
+
+- block:
+
+  - name: Instalacion Grid | Copia paquete compact-lib
+    copy:
+      src: /ansible/files/compat-libcap1-1.10-7.el7.x86_64.rpm
+      dest: /tmp
+      owner: root
+      group: root
+
+  - name: Instalacion Grid | Instala paquete compact-lib
+    yum:
+      name: /tmp/compat-libcap1-1.10-7.el7.x86_64.rpm
+      state: present
+
+  when: check is not changed
+
+- debug:
+    msg: "[ + ] El paquete ya estaba instalado.. se prosigue.."
+  when: check is changed
+  changed_when: true
+
+- block:
+  - name: Instalacion Grid | Valida directorio grid
+    find:
+      paths: "{{ grid_home }}"
+      recurse: no
+      file_type: any
+    register: check
+
+  - name: Instalacion Grid  | Crea ruta de la instalacion del grid
+    file:
+      path: "{{ grid_home }}"
+      state: directory
+      recurse: true
+      owner: grid
+      group: oinstall
+      mode: '0775'
+
+  - name: Instalacion Grid | Envia y descomprimir el instalador del grid en la ruta de instalacion
+    unarchive:
+      src: "{{ instalador_grid }}"
+      dest: "{{ grid_home }}"
+      owner: grid
+      group: oinstall
+    when: check.match == 0 
+  when: inventory_hostname in groups['nodo1']
+
+- name: Instalacion Grid | Elimina directorio de oracle base
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ oracle_base }}"
+    - "{{ orainventory }}"
+
+- block:
+  - name: Instalacion Grid | Elimina el home de grid (Sever secundario)
+    file:
+      path: "{{ grid_home }}"
+      state: absent
+
+  - name: Instalacion Grid | Crea nuevamente el home de grid (Server secundario)
+    file:
+      path: "{{ grid_home }}"
+      state: directory
+      owner: grid
+      group: oinstall
+      mode: '0775'
+  when: inventory_hostname in groups['nodo2']
+
+- name: Instalacion Grid | Crea directorio para Oracle base
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: grid
+    group: oinstall
+    mode: '0750'
+  loop:
+    - "{{ oracle_base }}"
+    - "{{ orainventory }}"
+
+- name: Instalacion Grid | Incluye tarea para CLUSTER
+  include_tasks: cluster.yml
+  when: iventory_hostname in groups['nodo1'] or inventory_hostname in groups['nodo2']
+
+- name: Instalacion Grid | Incluye tarea paa Standalone
+  include_tasks: standalone.yml
+  when: inventory_hostname in groups['standalone']
+...

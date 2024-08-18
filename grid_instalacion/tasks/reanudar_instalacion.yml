@@ -1,0 +1,17 @@
+---
+- name: Instalacion Grid | Ejecuta nuevamente instalador de Grid una vesz se han ejecutado los scripts de root para finalizar la instalacion.
+  shell: ./gridSetup.sh -executeConfigTools -responseFile "{{ responsefile_local }}" -silent
+  register: instalacion_fin
+  ignore_errors: true
+  failed_when: "'error' in instalacion_fin.stdout"
+  args:
+    executable: /bin/sh
+    chdir: "{{ grid_home }}"
+  become_user: grid
+  environment:
+    CV_ASSUME_DISTID: OEL7.8
+    TMPDIR: "{{ tmp_grid }}"
+    TMP: "{{ tmp_grid }}"
+
+- debug:
+    msg: "{{ instalacion_fin.stdout }}"

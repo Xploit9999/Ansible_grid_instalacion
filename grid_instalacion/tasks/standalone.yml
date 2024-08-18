@@ -1,0 +1,90 @@
+---
+- name: Instalacion Grid | Se recolecta fact en especifico. (STANDALONE)
+  setup:
+    gather_subset:
+      - '!all'
+      - '!min'
+      - network
+  async: 100
+  poll: 1
+
+- name: Instalacion Grid | Se crea directorio /etc/oracle (STANDALONE)
+  file:
+    path: /etc/oracle
+    state: directory
+    mode: '0775'
+    owner: root
+    group: oinstall
+
+- name: Instalacion Grid | Modela informacion de los DATA (STANDALONE)
+  set_fact:
+    valida_data: "{{ valida_data + '/dev/oracleasm/disks/' + item.label + ',,' }}"
+  loop: "{{ asm_disk }}"
+  when:
+    - item.host == inventory_hostname
+    - "'DATA' in item.label"
+  vars:
+    valida_data: ''
+
+- name: Instalacion Grid | Hay discos DATA? (STANDALONE)
+  set_fact:
+    discos_data: true
+  when: valida_data is defined
+
+- name: Instalacion Grid | Manejos de errores. (STANDALONE)
+  block:
+
+  - name: Instalacion Grid | Error controlado en caso de que no haya discos DATA. (STANDALONE)
+    fail:
+      msg: "No se encoentraron discos DATA. No se puede proseguir con la instalacion del grid. [x] !!!"
+    when: not discos_data
+
+  rescue:
+
+  - meta: end_play
+
+- name: Instalacion Grid | Reemplaza delimitadores para el campo del groupnames (STANDALONE)
+  set_fact:
+    data_groupnames: "{{ valida_data | regex_replace('..$', ',') }}"
+
+- name: Instalacion Grid | Reemplaza delimitadores para el campo del disks (STANDALONE)
+  set_fact:
+    data_disk: "{{ valida_data | regex_replace(',,', ',') | regex_replace(',$','') }}"
+
+- name: Instalacion Grid | Envia archivo de respuesta con la informacion previamente modela (STANDALONE)
+  template:
+    src: response_file_standalone.rsp.j2
+    dest: /tmp/response_file_standalone.rsp
+    owner: grid
+    group: oinstall
+
+- name: Instalacion Grid | Bloque donde se ejecutara instrucciones con el usuario Grid y sus variables de entorno. (STANDALONE)
+  block:
+
+  - name: Instalacion Grid | Se crea directorio temporal sobre el filesystem de grid (STANDALONE)
+    file:
+      path: "{{ tmp_grid }}"
+      state: directory
+      mode: '0775'
+      owner: grid
+      group: oinstall
+
+  - name: Instalacion Grid | Ejecuta instalador de Grid (STANDALONE)
+    shell: ./gridSetup.sh -silent -responseFile /tmp/response_file_standalone.rsp -ignorePrereq
+    register: instalacion_primeraparte
+    args:
+      executable: /bin/sh
+      chdir: "{{ grid_home }}"
+    failed_when: "'error' in instalacion_primeraparte.stdout"
+
+  - debug:
+      msg: "{{ instalacion_primeraparte.stdout }}"
+
+
+  become_user: grid
+  environment:
+      HOME: /home/grid
+      CV_ASSUME_DISTID: OEL7.8
+      TMPDIR: "{{ tmp_grid }}"
+      TMP: "{{ tmp_grid }}"
+

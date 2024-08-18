@@ -1,0 +1,16 @@
+---
+- block:
+  - name: Instalacion Grid | Ejecuta segundo script para continuar con el proceso de instalacion (Server secundario)
+    shell: ./root.sh
+    register: segundoscript
+    args:
+      executable: /bin/sh
+      chdir: "{{ grid_home }}"
+
+  - debug:
+      msg: "{{ segundscript.stdout }}"
+
+  rescue:
+
+  - meta: end_play
+...

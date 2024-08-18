@@ -1,0 +1,95 @@
+---
+- name: Instalacion Grid | Inicia proceso de instalacion del grid (Primario)
+  include_tasks: inicio_instalacion.yml
+  when: inventory_hostname in groups['nodo1']
+
+- block:
+  - name: Instalacion Grid | Error controlado si falla en el proceso de la ejecucion del instalador por relacion de confianza.
+    fail:
+      msg: "Problemas de relacion de confianza entre los nodos, se procede a invocar el role de relacion de confianza. !!!"
+    when:
+      - instalacion_primeraparte is defined
+      - "'Passwordless SSH connectivity' in instalacion_primeraparte.stdout"
+
+  rescue:
+
+  - debug:
+      msg: "Invocando role de relacion de confianza, por favor espere..."
+    changed_when: true
+
+  - pause:
+      seconds: 5
+
+  - name: Importar tarea general para creacion de grupos de relacion de confianza.
+    include_tasks:
+      file: /ansible/yml/tareas_generales/creacion_grupos.yml
+    vars:
+      usar_grupo_relacion: true
+
+  - setup:
+      gather_subset:
+        - '!all'
+        - '!min'
+        - os_family
+    async: 100
+    poll: 1
+
+  - name: Instalacion Grid | Invocacion de role relacion_confianza
+    include_role:
+      name: relacion_confianza
+
+  - block:
+    - name: Instalacion Grid | Se ejecuta el instalador de Grid nuevamente
+      shell: ~/.bash_profile && ./gridSetup.sh -silent -responseFile "{{ responsefile_local }}" -ignorePrereq
+      register: instalacion_primeraparte
+      args:
+        executable: /bin/sh
+        chdir: "{{ grid_home }}"
+      failed_when: "'error' in instalacion_primeraparte.stdout"
+      ignore_errors: true
+      become_user: grid
+      environment:
+        HOME: /home/grid
+        CV_ASSUME_DISTID: OEL7.8
+        TMPDIR: "{{ tmp_grid }}"
+        TMP: "{{ tmp_grid }}"
+
+    - debug:
+        msg: "{{ instalacion_primeraparte.stdout }}"
+
+    when: inventory_hostname in groups['nodo1']
+
+- name: Instalacion Grid | Ejecuta primer script para cambios de permisos requeridos
+  shell: ./orainstRoot.sh
+  register: primerscript
+  args:
+    executable: /bin/sh
+    chdir: "{{ orainventory }}"
+
+- debug:
+    msg: "{{ primerscript.stdout }}"
+
+- block:
+  - name: Instalacion Grid | Ejecuta segundo script para continuar con el proceso de instalacion.
+    shell: ./root.sh
+    register: segundoscript
+    args:
+      executable: /bin/sh
+      chdir: "{{ grid_home }}"
+
+  - debug:
+      msg: "{{ segundoscript.stdout }}"
+
+  rescue:
+
+  - meta: end_play
+  when: inventory_hostname in groups['nodo1']
+
+- name: Instalacion Grid | Eejecuta tareas para servidor secundario
+  include_tasks: tarea_servidor_secundario.yml
+  when: inventory_hostname in groups['nodo2']
+
+- name: Instalacion Grid | Reanuda instalacion sobre el servidor primario para finalizar instalacion.
+  include_tasks: reanudar_instalacion.yml
+  when: inventory_hostname in groups['nodo1']
+...

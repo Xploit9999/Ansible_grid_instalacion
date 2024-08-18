@@ -1,0 +1,172 @@
+---
+- name: Instalacion Grid | Se recolecta fact en especifico
+  setup:
+    gather_subset:
+      - '!all'
+      - '!min'
+      - network
+  async: 100
+  poll: 1
+
+- name: Instalacion Grid | Se crea directorio /etc/oracle
+  file:
+    path: /etc/oracle
+    state: directory
+    mode: '0775'
+    owner: root
+    group: oinstall
+
+- name: Instalacion Grid | Contenido /etc/hosts
+  slurp:
+    src: /etc/hosts
+  register: host
+
+- name: Instalacion Grid | Encuentra coincidencias de las entradas VIP
+  set_fact:
+    encontrar_vip: "{{ host['content'] | b64decode | regex_findall('.*vip') }}"
+
+- name: Instalacion Grid | Modela informacion obtenido sobre las VIP
+  set_fact:
+    formatear_vip: "{{ formatear_vip + item.split()[1] | regex_replace('-vip', '.davivienda.loc') + ':' + item.split()[1] + 'davivienda.loc' + ',' }}"
+  loop: "{{ encontrar_vip }}"
+  vars:
+    formatear_vip: ''
+
+- name: Instalacion Grid | Remueve delimitador final sobre las VIP
+  set_fact:
+    vip: "{{ formatear_vip | regex_replace(',$', '') }}" 
+
+- name: Instalacion Grid | Encuentra coincidencias de la primera entrada sobre la scan
+  set_fact:
+    encontrar_scan: "{{ host['content'] | b64decode | regex_findall('.*scan.*') | first }}"
+
+- name: Instalacion Grid | Modela Scan
+  set_fact:
+    scan: "{{ encontrar_scan.split()[1] }}"
+
+- name: Instalacion Grid | Revisa resolución DNS del scan
+  set_fact:
+    resolucion_scan: "{{ scan is ansible.utils.resolvable }}"
+
+- name: Instalacion Grid | Revisa resolucion DNS de las VIP
+  set_fact:
+    resolucion_vip: "{{ resolucion_vip + [item.split()[1]] + ' ' + item.split()[1] is ansible.utils.resolvable | string] }}"
+  loop: "{{ encoentrar_vip }}"
+  vars:
+    resolucion_vip: []
+
+- name: Instalacion Grid | Modela subnet principal
+  set_fact:
+    sub_principal: "{{ item.dev + ':' + ansible_facts[item.dev].ipv4.network + ':1,' }}"
+  loop: "{{ red_nodos }}"
+  when: inventory_hostname == item.host and item.conexion == 'principal'
+
+- name: Instalacion Grid | Modela subnet privada1
+  set_fact:
+    sub_priv1: "{{ item.dev + ':' + ansible_facts[item.dev].ipv4.network + ':5,' }}"
+  loop: "{{ red_nodos }}"
+  when: inventory_hostname == item.host and item.conexion == 'privada1'
+
+- name: Instalacion Grid | Modela subnet privada2
+  set_fact:
+    sub_priv2: "{{ item.dev + ':' + ansible_facts[item.dev].ipv4.network + ':5' }}"
+  loop: "{{ red_nodos }}"
+  when: inventory_hostname == item.host and item.conexion == 'privada2'
+
+- name: Instalacion Grid | Une todas las subnet con su respectiva posicion
+  set_fact:
+    ips: "{{ sub_priv1 + sub_principal + sub_priv2 }}"
+  when:
+    - sub_priv1 is defined
+    - sub_priv2 is defined
+    - sub_principal is defined
+
+- name: Instalacion Grid | Modela informacion de los OCR
+  set_fact:
+    valida_ocr: "{{ valida_ocr + '/dev/oracleasm/disks/' + item.label + ',,' }}"
+  loop: "{{ asm_disk }}"
+  when:
+    - item.host == inventory_hostname
+    - "'OCR' in item.label"
+  vars:
+    valida_ocr: ''
+
+- name: Instalacion Grid | Hay discos OCR?
+  set_fact:
+    discos_ocr: true
+  when: valida_ocr is defined
+
+- name: Instalacion Grid | Manejo de errores.
+  block:
+  - name: Instalacion Grid | Error controlado en caso de que no se halle informacion de la interfaces privadas y principal
+    fail:
+      msg: "Asegurarse que en el archivo main.yml este la informacion de las interfaces privadas y principal [x] !!!"
+    when: sub_priv1 is not defined or sub_principal is not defined or sub_priv2 is not defined
+
+  - name: Instalacion Grid | Error controlado en caso de que no haya discos OCR
+    fail:
+      msg: "No se encontraron discos OCR. No se puede proseguir con la instalacion del Grid. [X]!!!"
+    when: not discos_ocr
+
+  - name: Instalacion Grid | Error controlador en caso de que no haya resolucion DNS por la scan
+    fail:
+      msg: "No hay resolucion DNS a: {{ scan }}. Por favor Registrar al DNS este registro antes de ejecutar este playbook. [x] !!!"
+    when: not resolucion_scan
+
+  - name: Instalacion Grid | Error controlado en caso de que no haya reoslcuon DNS por las VIP.
+    fail:
+      msg: "No resuelve: {{ item.split()[0] }}. Ambas VIPs deben de resolver, no se puede proseguir hasta que las dos resuelvan. [x] !!!"
+    when: "'False' in item"
+    loop: "{{ resolcuon_vip }}"
+
+
+  rescue:
+
+  - meta: end_play
+
+- name: Instalacion Grid | Envia archivo de respuesta con la informacion previamente modelada.
+  template:
+    src: responsefile.rsp.j2
+    dest: "{{ responsefile_local }}"
+    owner: grid
+    group: oinstall
+
+- name: Instalacion Grid | Bloque donde se ejecutara instrucciones con el usuario Grid y sus variables de entorno.
+  block:
+
+  - name: Instalacion Grid | Se crea diectorio temporal sobre e filesystem de grid
+    file:
+      path: "{{ tmp_grid }}"
+      state: directory
+      mode: '0775'
+      owner: grid
+      group: oinstall
+
+  - name: Instalacion Grid | Ejecuta instalador de Grid
+    shell: . ~/.bash_profile && ./gridSetup.sh -silent -responseFile "{{ responsefile_local }}" -ignorePrereq
+    register: instalacion_primeraparte
+    args:
+      executable: /bin/sh
+      chdir: "{{ grid_home }}"
+    failed_when: "'error' in instalacion_primeraparte.stdout"
+    ignore_errors: true
+
+  - debug:
+      msg: "{{ instalacion_primeraparte.stdout }}"
+
+  - name: Instalacion Grid | Error controlado en caso de hallarse nombres diferentes en las interfaces
+    fail:
+      msg: "Las nomenclaturas de las interfaces son distintas y se deben dejar homologadas, por favor revisar con Vmware el orden de presentacion de las tarjetas."
+    when: "'different interface names on the following nodes' in instalacion_primeraparte.stdout"
+
+  rescue:
+
+  - meta: end_play
+
+  become_user: grid
+  environment:
+    HOME: /home/grid
+    CV_ASSUME_DISTID: OEL7.8
+    TMPDIR: "{{ tmp_grid }}"
+    TMP: "{{ tmp_grid }}"
+...
